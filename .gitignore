@@ -13,6 +13,7 @@
 .externalNativeBuild
 .cxx
 local.properties
+/app/release
 
 
 # Created by https://www.toptal.com/developers/gitignore/api/kotlin

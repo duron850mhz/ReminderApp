@@ -23,8 +23,12 @@ import android.widget.ListView
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import android.content.pm.PackageManager
+import android.Manifest
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import java.util.Calendar
@@ -53,9 +57,28 @@ class MainActivity : AppCompatActivity() {
     private var endHour = 18
     private var endMinute = 0
 
+    // 通知権限リクエスト用のランチャー
+    private val requestPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            addLog("通知権限が許可されました")
+        } else {
+            addLog("通知権限が拒否されました")
+            Toast.makeText(this, "通知を有効にするには権限が必要です", Toast.LENGTH_LONG).show()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
+        // 通知権限のリクエスト
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
 
         switchToggle = findViewById(R.id.switch_toggle)
         etIntervalHours = findViewById(R.id.et_interval_hours)
@@ -71,6 +94,13 @@ class MainActivity : AppCompatActivity() {
         prefs = getSharedPreferences("ReminderPrefs", MODE_PRIVATE)
         loadSettings()
         loadLogs()
+
+        // SharedPreferences の変更を監視
+        prefs.registerOnSharedPreferenceChangeListener { _, key ->
+            if (key == "logs") {
+                loadLogs()
+            }
+        }
 
         createNotificationChannel()
 
@@ -94,75 +124,56 @@ class MainActivity : AppCompatActivity() {
                 scheduleNextNotification(0)
             }
         }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(
-                confirmationReceiver,
-                IntentFilter("ACTION_CONFIRM"),
-                // 外部からのアクセスを許可しない (アプリ内部でのみ使用)
-                // RECEIVER_NOT_EXPORTED が利用可能なのは API 33 (Tiramisu) 以降
-                RECEIVER_NOT_EXPORTED
-            )
-        } else {
-            // API 33 未満のバージョンではフラグは不要
-            registerReceiver(confirmationReceiver, IntentFilter("ACTION_CONFIRM"))
-        }
     }
 
     private fun loadSettings() {
-        switchToggle.isChecked = prefs.getBoolean("isEnabled", false)
-        etIntervalHours.setText(prefs.getInt("intervalHours", 1).toString())
-        etIntervalMinutes.setText(prefs.getInt("intervalMinutes", 0).toString())
-        etReNotifyMinutes.setText(prefs.getInt("reNotifyMinutes", 5).toString())
         startHour = prefs.getInt("startHour", 9)
         startMinute = prefs.getInt("startMinute", 0)
         endHour = prefs.getInt("endHour", 18)
         endMinute = prefs.getInt("endMinute", 0)
-        tvStartTime.text = String.format("%02d:%02d", startHour, startMinute)
-        tvEndTime.text = String.format("%02d:%02d", endHour, endMinute)
+        etIntervalHours.setText(prefs.getInt("intervalHours", 1).toString())
+        etIntervalMinutes.setText(prefs.getInt("intervalMinutes", 0).toString())
+        etReNotifyMinutes.setText(prefs.getInt("reNotifyMinutes", 5).toString())
         etTitle.setText(prefs.getString("title", "リマインダー"))
         etMessage.setText(prefs.getString("message", "確認してください"))
+        tvStartTime.text = String.format(Locale.getDefault(), "%02d:%02d", startHour, startMinute)
+        tvEndTime.text = String.format(Locale.getDefault(), "%02d:%02d", endHour, endMinute)
+        switchToggle.isChecked = prefs.getBoolean("isEnabled", false)
     }
 
     private fun saveSettings() {
-        val editor = prefs.edit()
-        editor.putInt("intervalHours", etIntervalHours.text.toString().toIntOrNull() ?: 1)
-        editor.putInt("intervalMinutes", etIntervalMinutes.text.toString().toIntOrNull() ?: 0)
-        editor.putInt("reNotifyMinutes", etReNotifyMinutes.text.toString().toIntOrNull() ?: 5)
-        editor.putInt("startHour", startHour)
-        editor.putInt("startMinute", startMinute)
-        editor.putInt("endHour", endHour)
-        editor.putInt("endMinute", endMinute)
-        editor.putString("title", etTitle.text.toString())
-        editor.putString("message", etMessage.text.toString())
-        editor.apply()
-    }
-
-    private fun loadLogs() {
-        val logsJson = prefs.getString("logs", null)
-        if (logsJson != null) {
-            logs = gson.fromJson(logsJson, object : TypeToken<MutableList<String>>() {}.type)
+        val intervalHours = etIntervalHours.text.toString().toIntOrNull() ?: 1
+        val intervalMinutes = etIntervalMinutes.text.toString().toIntOrNull() ?: 0
+        val reNotifyMinutes = etReNotifyMinutes.text.toString().toIntOrNull() ?: 5
+        prefs.edit().apply {
+            putInt("intervalHours", intervalHours)
+            putInt("intervalMinutes", intervalMinutes)
+            putInt("reNotifyMinutes", reNotifyMinutes)
+            putString("title", etTitle.text.toString())
+            putString("message", etMessage.text.toString())
+            putInt("startHour", startHour)
+            putInt("startMinute", startMinute)
+            putInt("endHour", endHour)
+            putInt("endMinute", endMinute)
+            apply()
         }
-        updateLogList()
-    }
-
-    private fun saveLogs() {
-        if (logs.size > 100) {
-            logs = logs.takeLast(100).toMutableList()
-        }
-        prefs.edit().putString("logs", gson.toJson(logs)).apply()
     }
 
     private fun addLog(message: String) {
         val timestamp = DateFormat.format("yyyy-MM-dd HH:mm:ss", Calendar.getInstance()).toString()
         logs.add("$timestamp: $message")
-        saveLogs()
-        updateLogList()
+        prefs.edit().putString("logs", gson.toJson(logs)).apply()
+        lvLogs.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, logs.reversed())
     }
 
-    private fun updateLogList() {
-        val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, logs.reversed())
-        lvLogs.adapter = adapter
+    private fun loadLogs() {
+        val logsJson = prefs.getString("logs", null)
+        logs = if (logsJson != null) {
+            gson.fromJson(logsJson, object : TypeToken<MutableList<String>>() {}.type)
+        } else {
+            mutableListOf()
+        }
+        lvLogs.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, logs.reversed())
     }
 
     private fun showTimePicker(isStart: Boolean) {
@@ -172,37 +183,31 @@ class MainActivity : AppCompatActivity() {
             if (isStart) {
                 startHour = h
                 startMinute = m
-                tvStartTime.text = String.format("%02d:%02d", h, m)
+                tvStartTime.text = String.format(Locale.getDefault(), "%02d:%02d", h, m)
             } else {
                 endHour = h
                 endMinute = m
-                tvEndTime.text = String.format("%02d:%02d", h, m)
+                tvEndTime.text = String.format(Locale.getDefault(), "%02d:%02d", h, m)
             }
         }, hour, minute, true).show()
     }
 
     private fun scheduleNextNotification(reNotifyCount: Int) {
         val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
-
-        // 修正: calculateNextNotificationTimeの戻り値をnextTimeMillisとして定義する
         val nextTimeMillis = calculateNextNotificationTime(reNotifyCount)
 
         if (nextTimeMillis <= 0) {
-            addLog("次の通知時間が見つかりませんでした (時間帯外の可能性があります)")
-            return // nextTimeMillisが0以下なら処理を中断
+            addLog("通知スケジュールを設定できませんでした (時間帯外または無効な時間)")
+            return
         }
 
-        // requestCode は 0 だと上書きされる可能性があるので、ユニークな ID に変更することを推奨します。
-        // 再通知のintentはcountを持つため、通常通知と再通知でIDを分ける
         val intent = if (reNotifyCount == 0) {
             Intent(this, NotificationReceiver::class.java)
         } else {
             Intent(this, ReNotificationReceiver::class.java).putExtra("count", reNotifyCount)
         }
 
-        // 通常通知は ID 100、再通知は ID 101
         val requestCode = if (reNotifyCount == 0) 100 else 101
-
         val pendingIntent = PendingIntent.getBroadcast(
             this, requestCode,
             intent,
@@ -210,10 +215,6 @@ class MainActivity : AppCompatActivity() {
         )
 
         addLog(if (reNotifyCount == 0) "次の通常通知をスケジュール" else "再通知をスケジュール")
-
-        // setExact/setExactAndAllowWhileIdle の代わりに setAndAllowWhileIdle を使用します。
-        // これにより、SCHEDULE_EXACT_ALARM 権限のチェックが不要になります。
-        // ELAPSED_REALTIME_WAKEUP は、端末起動からの時間とスリープ中も動作することを意味します。
         alarmManager.setAndAllowWhileIdle(
             AlarmManager.ELAPSED_REALTIME_WAKEUP,
             SystemClock.elapsedRealtime() + nextTimeMillis,
@@ -235,30 +236,54 @@ class MainActivity : AppCompatActivity() {
         val startCal = Calendar.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, prefs.getInt("startHour", 9))
             set(Calendar.MINUTE, prefs.getInt("startMinute", 0))
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
         }
         val endCal = Calendar.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, prefs.getInt("endHour", 18))
             set(Calendar.MINUTE, prefs.getInt("endMinute", 0))
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
         }
 
-        // 時間帯外なら次の時間帯開始までスキップ（約10分誤差OKなので簡易）
-        while (!isWithinTimeBand(nextCal)) {
-            nextCal.add(Calendar.DAY_OF_YEAR, 1)
-            nextCal.set(Calendar.HOUR_OF_DAY, startCal.get(Calendar.HOUR_OF_DAY))
-            nextCal.set(Calendar.MINUTE, startCal.get(Calendar.MINUTE))
+        // 時間帯外なら次の時間帯開始までスキップ
+        if (!isWithinTimeBand(nextCal)) {
+            // 現在の時刻が終了時間を過ぎている場合、翌日の開始時間に設定
+            if (nextCal.timeInMillis > endCal.timeInMillis) {
+                nextCal = Calendar.getInstance().apply {
+                    timeInMillis = startCal.timeInMillis
+                    add(Calendar.DAY_OF_YEAR, 1)
+                }
+            } else {
+                // 開始時間より前なら当日の開始時間に設定
+                nextCal = Calendar.getInstance().apply {
+                    timeInMillis = startCal.timeInMillis
+                }
+            }
         }
 
-        return nextCal.timeInMillis - now.timeInMillis
+        val nextTimeMillis = nextCal.timeInMillis - now.timeInMillis
+        if (nextTimeMillis <= 0) {
+            addLog("エラー: 次の通知時間が過去または現在です: ${DateFormat.format("yyyy-MM-dd HH:mm:ss", nextCal.timeInMillis)}")
+            return -1 // 無効な時間を返してスケジュールを中断
+        }
+
+        addLog("次の通知時間: ${DateFormat.format("yyyy-MM-dd HH:mm:ss", nextCal.timeInMillis)}")
+        return nextTimeMillis
     }
 
     private fun isWithinTimeBand(cal: Calendar): Boolean {
         val startCal = Calendar.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, prefs.getInt("startHour", 9))
             set(Calendar.MINUTE, prefs.getInt("startMinute", 0))
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
         }
         val endCal = Calendar.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, prefs.getInt("endHour", 18))
             set(Calendar.MINUTE, prefs.getInt("endMinute", 0))
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
         }
         val time = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
         val start = startCal.get(Calendar.HOUR_OF_DAY) * 60 + startCal.get(Calendar.MINUTE)
@@ -293,20 +318,5 @@ class MainActivity : AppCompatActivity() {
             val channel = NotificationChannel("reminder_channel", "Reminder Notifications", NotificationManager.IMPORTANCE_DEFAULT)
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
-    }
-
-    private val confirmationReceiver: BroadcastReceiver by lazy {
-        object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
-                addLog("確認押下")
-                cancelAllAlarms()  // 再通知キャンセル
-                scheduleNextNotification(0)  // 次通常通知スケジュール
-            }
-        }
-    }
-
-    override fun onDestroy() {
-        unregisterReceiver(confirmationReceiver)
-        super.onDestroy()
     }
 }
